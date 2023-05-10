@@ -18,7 +18,7 @@ mod serial_setup;
 use serial_setup::UartePort;
 
 use lsm303agr::{
-    AccelOutputDataRate, Lsm303agr,
+    AccelOutputDataRate, Lsm303agr, interface::I2cInterface, mode::MagContinuous,
 };
 
 enum Command {
@@ -31,33 +31,39 @@ enum Command {
 fn main() -> ! {
     rtt_init_print!();
     let board = microbit::Board::take().unwrap();
-    
-    let i2c = { twim::Twim::new(board.TWIM0, board.i2c_internal.into(), FREQUENCY_A::K100) };
-    
-    let mut sensor: Lsm303agr<lsm303agr::interface::I2cInterface<Twim<TWIM0>>, lsm303agr::mode::MagOneShot> = Lsm303agr::new_with_i2c(i2c);
-    sensor.init().unwrap();
-    sensor.set_accel_odr(AccelOutputDataRate::Hz50).unwrap();
-    sensor.set_mag_odr(lsm303agr::MagOutputDataRate::Hz50).unwrap();
-    let mut sensor: Lsm303agr<lsm303agr::interface::I2cInterface<Twim<TWIM0>>, lsm303agr::mode::MagContinuous> = sensor.into_mag_continuous().ok().unwrap();
 
-    let mut serial = {
-        let serial = uarte::Uarte::new(
-            board.UARTE0,
-            board.uart.into(),
-            Parity::EXCLUDED,
-            Baudrate::BAUD115200,
-        );
-        UartePort::new(serial)
-    };
+    let (mut serial, mut sensor) = get_serial_and_sensor(board);
 
     loop {
         let command = parse_command(&mut serial);
-        execute_command(&mut serial, command, &mut sensor);
+        execute_command(command, &mut sensor, &mut serial);
     }
 }
 
+fn get_serial_and_sensor(board: microbit::Board) -> (UartePort<UARTE0>, Lsm303agr<I2cInterface<Twim<TWIM0>>, MagContinuous>) {
+    (
+        {
+            let serial = uarte::Uarte::new(
+                board.UARTE0,
+                board.uart.into(),
+                Parity::EXCLUDED,
+                Baudrate::BAUD115200,
+            );
+            UartePort::new(serial)
+        },
+        {
+            let i2c = { twim::Twim::new(board.TWIM0, board.i2c_internal.into(), FREQUENCY_A::K100) };
+    
+            let mut sensor = Lsm303agr::new_with_i2c(i2c);
+            sensor.init().unwrap();
+            sensor.set_accel_odr(AccelOutputDataRate::Hz50).unwrap();
+            sensor.set_mag_odr(lsm303agr::MagOutputDataRate::Hz50).unwrap();
+            sensor.into_mag_continuous().ok().unwrap()
+        }
+    )
+}
+
 fn parse_command(serial: &mut UartePort<UARTE0>) -> Command {
-    write!(serial, "Parsing command\r\n").unwrap();
     let mut buffer: Vec<u8, 32> = Vec::new();
     
     loop {
@@ -71,13 +77,12 @@ fn parse_command(serial: &mut UartePort<UARTE0>) -> Command {
         if byte == 13 {
             let command = core::str::from_utf8(&buffer).unwrap();
 
-            write!(serial, "{}\r\n", command);
+            write!(serial, "{}\r\n\r\n", command).unwrap();
             
-            return match command {
+            return match command.trim() {
                 "magnetometer" => Command::Magnetometer,
                 "accelerometer" => Command::Accelerometer,
                 _ => {
-                    write!(serial, "error: unknown command\r\n").unwrap();
                     Command::Error
                 }
             };
@@ -85,23 +90,22 @@ fn parse_command(serial: &mut UartePort<UARTE0>) -> Command {
     }
 }
 
-fn execute_command(serial: &mut UartePort<UARTE0>, command: Command, sensor: &mut Lsm303agr<lsm303agr::interface::I2cInterface<Twim<TWIM0>>, lsm303agr::mode::MagContinuous>) {
-    
+fn execute_command(command: Command, sensor: &mut Lsm303agr<I2cInterface<Twim<TWIM0>>, MagContinuous>, serial: &mut UartePort<UARTE0>) {
     match command {
         Command::Accelerometer => {
             if sensor.accel_status().unwrap().xyz_new_data {
                 let data = sensor.accel_data().unwrap();
-                write!(serial, "Acceleration: x {} y {} z {}", data.x, data.y, data.z);
+                write!(serial, "Accelerometer: x {} y {} z {}\r\n", data.x, data.y, data.z).unwrap();
             }
         },
         Command::Magnetometer => {
             if sensor.mag_status().unwrap().xyz_new_data {
                 let data = sensor.mag_data().unwrap();
-                write!(serial, "Magnetic field: x {} y {} z {}", data.x, data.y, data.z);
+                write!(serial, "Magnetometer: x {} y {} z {}\r\n", data.x, data.y, data.z).unwrap();
             }
         },
         Command::Error => {
-            write!(serial, "Unknown command");
+            write!(serial, "Unknown command\r\n").unwrap();
         },
     }
 }
