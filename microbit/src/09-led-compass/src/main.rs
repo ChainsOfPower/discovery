@@ -10,6 +10,10 @@ mod calibration;
 use crate::calibration::calc_calibration;
 use crate::calibration::calibrated_measurement;
 
+mod led;
+use crate::led::Direction;
+use crate::led::direction_to_led;
+
 use microbit::{display::blocking::Display, hal::Timer};
 
 #[cfg(feature = "v1")]
@@ -41,12 +45,21 @@ fn main() -> ! {
     let mut sensor = sensor.into_mag_continuous().ok().unwrap();
 
     let calibration = calc_calibration(&mut sensor, &mut display, &mut timer);
+
     rprintln!("Calibration: {:?}", calibration);
     rprintln!("Calibration done, entering busy loop");
     loop {
         while !sensor.mag_status().unwrap().xyz_new_data {}
         let mut data = sensor.mag_data().unwrap();
         data = calibrated_measurement(data, &calibration);
-        rprintln!("x: {}, y: {}, z: {}", data.x, data.y, data.z);
+        
+        let dir = match (data.x > 0, data.y > 0) {
+            (true, true) => Direction::NorthEast,
+            (false, true) => Direction::NorthWest,
+            (false, false) => Direction::SouthWest,
+            (true, false) => Direction::SouthEast,
+        };
+
+        display.show(&mut timer, direction_to_led(dir), 100);
     }
 }
